@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  # ── Lavalink audio server ──────────────────────────────────────────────────
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: lavalink
+    restart: unless-stopped
+    volumes:
+      - ./application.yml:/opt/Lavalink/application.yml:ro
+      - ./plugins:/opt/Lavalink/plugins          # drop LavaSrc jar here
+      - lavalink_logs:/opt/Lavalink/logs
+    ports:
+      - "2333:2333"
+    environment:
+      - _JAVA_OPTIONS=-Xmx512m
+    networks:
+      - music_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2333/version || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Discord bot ────────────────────────────────────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot        # see below
+    container_name: music_bot
+    restart: unless-stopped
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - LAVALINK_HOST=lavalink         # service name → internal DNS
+    volumes:
+      - bot_logs:/app/logs
+    networks:
+      - music_net
+
+volumes:
+  lavalink_logs:
+  bot_logs:
+
+networks:
+  music_net:
+    driver: bridge

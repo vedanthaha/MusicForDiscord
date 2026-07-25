@@ -1,0 +1,99 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+  # Set to true only if you put Lavalink behind a TLS-terminating proxy
+  # and update LAVALINK_SECURE=true in .env as well.
+
+plugins:
+  # ── LavaSrc ────────────────────────────────────────────────────────────────
+  # LavaSrc adds Spotify, Apple Music, Deezer, YouTube Music, and Yandex
+  # Music source managers to Lavalink. Download the plugin jar from:
+  #   https://github.com/topi314/LavaSrc/releases
+  # and place it in the ./plugins/ directory next to Lavalink.jar.
+  lavasrc:
+    providers:
+      - "ytsearch:\"%ISRC%\""   # search YouTube by ISRC for Spotify tracks
+      - "ytsearch:%QUERY%"      # fallback plain YouTube search
+      - "ytmsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      youtube: true
+      youtubemusic: true
+    spotify:
+      # Create a Spotify app at https://developer.spotify.com/dashboard
+      clientId: "YOUR_SPOTIFY_CLIENT_ID"
+      clientSecret: "YOUR_SPOTIFY_CLIENT_SECRET"
+      # Country code for Spotify availability
+      countryCode: "US"
+      playlistLoadLimit: 6         # max concurrent playlist page requests
+      albumLoadLimit: 6
+
+lavalink:
+  server:
+    password: "youshallnotpass"
+    sources:
+      youtube: true
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10         # 0–10; 10 = highest quality, highest CPU
+    resamplingQuality: HIGH
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5         # seconds
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+    youtubeConfig:
+      # Optional: provide a YouTube OAuth token for better reliability.
+      # See Lavalink docs: https://lavalink.dev/configuration/index.html
+      email: ""
+      password: ""
+    ratelimit:
+      ipBlocks: []                  # Add IP blocks for rotation if needed
+      excludedIps: []
+      strategy: "RotateOnBan"
+      searchTriggersFail: true
+      retryLimit: -1
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+  environment: ""
+  tags:
+    some_key: some_value
+
+logging:
+  file:
+    path: ./logs/lavalink.log
+  level:
+    root: INFO
+    lavalink: INFO
+  logback:
+    rollingpolicytype: "RollingFile"
+    max-history: 7
+    max-size: 10MB

@@ -1,0 +1,17 @@
+# Discord (includes voice support via PyNaCl)
+discord.py[voice]==2.7.1
+
+# HTTP client – Arc API and connection pooling
+aiohttp==3.9.5
+
+# YouTube video ID + metadata resolution (runs in thread executor, non-blocking)
+yt-dlp==2024.8.6
+
+# Environment
+python-dotenv==1.0.1
+
+# Redis cache (optional – bot degrades gracefully without it)
+redis==5.0.8
+
+# Logging
+colorlog==6.8.2
