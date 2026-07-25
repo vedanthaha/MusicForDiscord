@@ -404,11 +404,16 @@ class Music(commands.Cog):
             return existing
 
         try:
-            vc: discord.VoiceClient = await target.connect(self_deaf=True)
-        except discord.ClientException as exc:
+            if guild.voice_client and guild.voice_client.is_connected():
+                vc = cast(discord.VoiceClient, guild.voice_client)
+                if vc.channel != target:
+                    await vc.move_to(target)
+            else:
+                vc = await target.connect(self_deaf=True, timeout=30.0, reconnect=True)
+        except Exception as exc:
             logger.warning("Voice connect failed: %s", exc)
             await interaction.followup.send(
-                embed=em.error("Couldn't join your channel — check my permissions."),
+                embed=em.error("Couldn't join your channel — check my permissions or try again."),
                 ephemeral=True,
             )
             return None
