@@ -308,16 +308,52 @@ def _sync_resolve_youtube_meta(query: str) -> _YtMeta:
         return None, None, None, None
 
 
+async def _youtube_oembed(url: str) -> _YtMeta:
+    """
+    Use YouTube's public oEmbed API to instantly resolve video ID, title, and thumbnail
+    without invoking yt-dlp or triggering bot-detection / HTTP 429 rate limits.
+    """
+    m = re.search(r"(?:v=|\/)([a-zA-Z0-9_-]{11})", url)
+    if not m:
+        return None, None, None, None
+    video_id = m.group(1)
+    oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+    title: str | None = None
+    thumbnail: str | None = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as s:
+            async with s.get(oembed_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    title = data.get("title")
+                    if data.get("thumbnail_url"):
+                        thumbnail = data.get("thumbnail_url")
+    except Exception as exc:
+        logger.debug("YouTube oEmbed failed for %r: %s", url, exc)
+
+    return video_id, title, thumbnail, None
+
+
 async def _resolve_youtube_meta(
     query: str, provider: Provider
 ) -> _YtMeta:
     """
     Async wrapper: resolve a user query to YouTube metadata.
 
-    For YouTube URLs: extract the ID via regex (fast path), then fall through
-    to yt-dlp for the rest of the metadata.
-    For plain-text / Spotify: delegate entirely to yt-dlp in an executor.
+    For YouTube URLs: fast-path via public YouTube oEmbed API to bypass yt-dlp 429 rate limits.
+    For Spotify: resolve track name via Spotify oEmbed, then search YouTube.
+    For Plain-text search: delegate to yt-dlp in an executor.
     """
+    is_url = query.startswith("http://") or query.startswith("https://") or "youtube.com" in query or "youtu.be" in query
+
+    # YouTube URL fast path (0% yt-dlp dependency, 100% resilient to 429 rate limits)
+    if is_url and ("watch?v=" in query or "youtu.be/" in query) and "youtube.com/playlist" not in query:
+        vid, title, thumb, dur = await _youtube_oembed(query)
+        if vid:
+            return vid, title or f"YouTube Video ({vid})", thumb, dur
+
     # For Spotify: resolve track name via oEmbed first, then search YouTube
     if provider == Provider.SPOTIFY:
         title = await _spotify_track_title(query)
