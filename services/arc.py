@@ -253,24 +253,31 @@ _YtMeta = tuple[str | None, str | None, str | None, int | None]
 
 def _sync_resolve_youtube_meta(query: str) -> _YtMeta:
     """
-    Synchronous helper: use yt-dlp to get the first YouTube result's metadata.
+    Synchronous helper: use yt-dlp to get YouTube result metadata.
     Returns (video_id, title, thumbnail_url, duration_seconds).
     Must be called via run_in_executor.
     """
     try:
         import yt_dlp  # noqa: PLC0415 – intentional late import
 
+        is_url = query.startswith("http://") or query.startswith("https://") or "youtube.com" in query or "youtu.be" in query
+
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
-            "extract_flat": "in_playlist",
             "skip_download": True,
             "noplaylist": True,
             "default_search": "ytsearch",
             "logger": logging.getLogger("yt_dlp"),
         }
+        
+        if not is_url:
+            opts["extract_flat"] = "in_playlist"
+
+        target = query if is_url else f"ytsearch1:{query}"
+
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            info = ydl.extract_info(target, download=False)
             if not info:
                 return None, None, None, None
             entries = info.get("entries") or []
