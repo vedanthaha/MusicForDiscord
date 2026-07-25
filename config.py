@@ -90,7 +90,7 @@ class ArcConfig:
         default_factory=lambda: _optional("ARC_BASE_URL", "https://api.arcmusic.fun")
     )
     job_timeout: float = field(
-        default_factory=lambda: _float("ARC_JOB_TIMEOUT", 60.0)
+        default_factory=lambda: _float("ARC_JOB_TIMEOUT", 180.0)
     )
     max_concurrency: int = field(
         default_factory=lambda: _int("ARC_MAX_CONCURRENCY", 5)
