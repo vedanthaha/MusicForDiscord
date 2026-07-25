@@ -409,7 +409,17 @@ class Music(commands.Cog):
                 if vc.channel != target:
                     await vc.move_to(target)
             else:
-                vc = await target.connect(self_deaf=True, timeout=30.0, reconnect=True)
+                try:
+                    vc = await target.connect(self_deaf=True, timeout=15.0, reconnect=True)
+                except Exception as first_err:
+                    logger.warning("Initial voice connect failed (%s). Forcing voice state reset and retrying...", first_err)
+                    if guild.voice_client:
+                        try:
+                            await guild.voice_client.disconnect(force=True)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(1.0)
+                    vc = await target.connect(self_deaf=True, timeout=20.0, reconnect=True)
         except Exception as exc:
             logger.warning("Voice connect failed: %s", exc)
             await interaction.followup.send(
