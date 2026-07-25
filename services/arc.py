@@ -262,6 +262,18 @@ def _sync_resolve_youtube_meta(query: str) -> _YtMeta:
 
         is_url = query.startswith("http://") or query.startswith("https://") or "youtube.com" in query or "youtu.be" in query
 
+        # If query is a single YouTube video URL (even with &list=... radio parameters), clean it to watch?v=VIDEO_ID
+        if is_url and ("watch?v=" in query or "youtu.be/" in query) and "youtube.com/playlist" not in query:
+            m = re.search(r"(?:v=|\/)([a-zA-Z0-9_-]{11})", query)
+            if m:
+                target = f"https://www.youtube.com/watch?v={m.group(1)}"
+            else:
+                target = query
+        elif is_url:
+            target = query
+        else:
+            target = f"ytsearch1:{query}"
+
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -273,8 +285,6 @@ def _sync_resolve_youtube_meta(query: str) -> _YtMeta:
         
         if not is_url:
             opts["extract_flat"] = "in_playlist"
-
-        target = query if is_url else f"ytsearch1:{query}"
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target, download=False)
