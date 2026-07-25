@@ -196,11 +196,9 @@ _FFMPEG_BEFORE_OPTS = (
     "-reconnect 1 "
     "-reconnect_streamed 1 "
     "-reconnect_delay_max 5 "
-    "-probesize 32k "
-    "-analyzeduration 0 "
     "-loglevel warning"
 )
-_FFMPEG_OPTS = '-vn -filter:a "volume=1.3"'
+_FFMPEG_OPTS = "-vn"
 _BITRATE_BY_TIER: dict[int, int] = {0: 96_000, 1: 128_000, 2: 256_000, 3: 384_000}
 
 class GuildPlayer:
