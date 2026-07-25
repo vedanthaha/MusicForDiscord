@@ -19,6 +19,7 @@ from discord.ext import commands
 import utils.embeds as em
 from config import cfg
 from services.arc import ArcClient, ArcError
+from services.lyrics import fetch_lyrics, ParsedLyrics
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,25 @@ class MusicControlsView(discord.ui.View):
         await interaction.response.defer()
         await self.update_message()
 
+    @discord.ui.button(label="Lyrics", style=discord.ButtonStyle.blurple, emoji="🎤", custom_id="lyrics_btn")
+    async def lyrics_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=False)
+        if not self.player.current:
+            await interaction.followup.send(embed=em.error("Nothing is playing."), ephemeral=True)
+            return
+
+        if not self.player.current_lyrics:
+            self.player.current_lyrics = await fetch_lyrics(self.player.current.title)
+
+        parsed = self.player.current_lyrics
+        if not parsed:
+            await interaction.followup.send(embed=em.error(f"No lyrics found for **{self.player.current.title}**."), ephemeral=True)
+            return
+
+        snippet = parsed.get_synced_window(self.player.position)
+        msg = await interaction.followup.send(embed=em.lyrics_embed(parsed.title, parsed.artist, snippet, parsed.is_synced))
+        self.player.lyrics_message = msg
+
     @discord.ui.button(label="Stop", style=discord.ButtonStyle.red, emoji="⏹", custom_id="stop")
     async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.cog._players.pop(self.player.guild.id, None)
@@ -180,7 +200,7 @@ _FFMPEG_BEFORE_OPTS = (
     "-analyzeduration 0 "
     "-loglevel warning"
 )
-_FFMPEG_OPTS = '-vn -ar 48000 -ac 2 -filter:a "volume=1.3"'
+_FFMPEG_OPTS = '-vn -filter:a "volume=1.3"'
 _BITRATE_BY_TIER: dict[int, int] = {0: 96_000, 1: 128_000, 2: 256_000, 3: 384_000}
 
 class GuildPlayer:
@@ -204,6 +224,8 @@ class GuildPlayer:
         self._idle_task: asyncio.Task | None = None
         self._updater_task: asyncio.Task | None = None
         self.current_view: MusicControlsView | None = None
+        self.current_lyrics: ParsedLyrics | None = None
+        self.lyrics_message: discord.Message | None = None
         self._is_switching: bool = False
 
     @property
@@ -233,16 +255,25 @@ class GuildPlayer:
         vol_wrapped = discord.PCMVolumeTransformer(raw, volume=self._volume)
         return PositionAudioSource(vol_wrapped)
 
+    async def _prefetch_lyrics(self, title: str) -> None:
+        try:
+            self.current_lyrics = await fetch_lyrics(title)
+        except Exception:
+            pass
+
     async def start(self, track: Track) -> None:
         self._cancel_idle()
         self._cancel_updater()
         if self.vc.is_playing() or self.vc.is_paused():
             self._is_switching = True
             self.vc.stop()
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.2)
             self._is_switching = False
 
         self.current = track
+        self.current_lyrics = None
+        self.lyrics_message = None
+        self._loop.create_task(self._prefetch_lyrics(track.title))
         source = self._make_source(track.stream_url)
         self.vc.play(source, after=self._after_play)
         logger.info("Playing in guild %s: %r", self.guild.id, track.title)
@@ -339,9 +370,24 @@ class GuildPlayer:
             await self.disconnect()
 
     async def _update_loop(self) -> None:
+        tick = 0
         while self.is_playing or self.is_paused:
-            await asyncio.sleep(5)
-            if self.current_view and not self.is_paused:
+            await asyncio.sleep(2.5)
+            tick += 1
+            if self.lyrics_message and self.current_lyrics and not self.is_paused:
+                try:
+                    window = self.current_lyrics.get_synced_window(self.position)
+                    embed = em.lyrics_embed(
+                        self.current_lyrics.title,
+                        self.current_lyrics.artist,
+                        window,
+                        self.current_lyrics.is_synced,
+                    )
+                    await self.lyrics_message.edit(embed=embed)
+                except Exception as exc:
+                    logger.debug("Error updating lyrics message: %s", exc)
+
+            if tick % 2 == 0 and self.current_view and not self.is_paused:
                 await self.current_view.update_message()
 
     def _cancel_updater(self) -> None:
@@ -466,8 +512,8 @@ class Music(commands.Cog):
 
     # ── Slash commands ────────────────────────────────────────────────────────
 
-    @app_commands.command(name="play", description="Play a song or add it to the queue.")
-    @app_commands.describe(query="Song name, YouTube URL, or Spotify URL")
+    @app_commands.command(name="play", description="Play a song or add a playlist to the queue.")
+    @app_commands.describe(query="Song name, YouTube URL, or Spotify playlist/track URL")
     @app_commands.guild_only()
     async def play(self, interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer(ephemeral=False)
@@ -475,6 +521,64 @@ class Music(commands.Cog):
         if player is None:
             return
 
+        # 1. Check if query is a Spotify or YouTube playlist/album
+        pl_title, track_queries = await self.arc.resolve_playlist(query)
+        if track_queries:
+            first_q = track_queries[0]
+            resolved = await self.arc.resolve(first_q)
+            if not resolved.via_arc:
+                await interaction.followup.send(embed=em.error("Failed to resolve playlist tracks."), ephemeral=True)
+                return
+
+            first_track = Track(
+                title=resolved.title or first_q,
+                stream_url=resolved.lavalink_query,
+                thumbnail=resolved.thumbnail,
+                duration=resolved.duration,
+                requester=cast(discord.Member, interaction.user),
+                video_id=resolved.video_id,
+            )
+
+            is_already_playing = player.is_playing or player.is_paused
+
+            if is_already_playing:
+                player.queue.append(first_track)
+                await interaction.followup.send(embed=em.playlist_queued(pl_title or "Playlist", len(track_queries)))
+            else:
+                player.text_channel = interaction.channel
+                await player.start(first_track)
+                view = MusicControlsView(player, self)
+                msg = await interaction.followup.send(
+                    embed=em.now_playing_track(
+                        first_track, position=0.0, is_paused=False, volume=player.volume, queue_len=len(track_queries) - 1
+                    ),
+                    view=view
+                )
+                view.message = msg
+                player.current_view = view
+
+            # Enqueue remaining tracks asynchronously in background
+            async def _load_remaining():
+                for q in track_queries[1:]:
+                    try:
+                        res = await self.arc.resolve(q)
+                        if res.via_arc:
+                            t = Track(
+                                title=res.title or q,
+                                stream_url=res.lavalink_query,
+                                thumbnail=res.thumbnail,
+                                duration=res.duration,
+                                requester=cast(discord.Member, interaction.user),
+                                video_id=res.video_id,
+                            )
+                            player.queue.append(t)
+                    except Exception as err:
+                        logger.warning("Background playlist track resolve error: %s", err)
+
+            asyncio.create_task(_load_remaining())
+            return
+
+        # Single track resolution
         resolved = await self.arc.resolve(query)
         if not resolved.via_arc:
             await interaction.followup.send(
@@ -613,6 +717,36 @@ class Music(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view)
         view.message = msg
         player.current_view = view
+
+    @app_commands.command(name="lyrics", description="Display live auto-synced lyrics for the current song or query.")
+    @app_commands.describe(query="Song title (optional, defaults to current playing song)")
+    @app_commands.guild_only()
+    async def lyrics(self, interaction: discord.Interaction, query: str | None = None) -> None:
+        await interaction.response.defer(ephemeral=False)
+        guild = cast(discord.Guild, interaction.guild)
+        player = self._get_player(guild)
+
+        target_title = query
+        if not target_title and player and player.current:
+            target_title = player.current.title
+
+        if not target_title:
+            await interaction.followup.send(embed=em.error("No song specified and nothing is currently playing."), ephemeral=True)
+            return
+
+        parsed = await fetch_lyrics(target_title)
+        if not parsed:
+            await interaction.followup.send(embed=em.error(f"No lyrics found for **{target_title}**."), ephemeral=True)
+            return
+
+        if player and player.current and (not query or target_title == player.current.title):
+            player.current_lyrics = parsed
+            snippet = parsed.get_synced_window(player.position)
+            msg = await interaction.followup.send(embed=em.lyrics_embed(parsed.title, parsed.artist, snippet, parsed.is_synced))
+            player.lyrics_message = msg
+        else:
+            snippet = parsed.get_synced_window(0.0) if parsed.is_synced else parsed.plain_text[:1000]
+            await interaction.followup.send(embed=em.lyrics_embed(parsed.title, parsed.artist, snippet, parsed.is_synced))
 
     @app_commands.command(name="volume", description="Set volume (1–250).")
     @app_commands.describe(level="Volume from 1 to 250")

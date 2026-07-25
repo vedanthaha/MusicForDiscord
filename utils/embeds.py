@@ -102,6 +102,13 @@ def track_queued(track: Track, position: int) -> discord.Embed:
     return embed
 
 
+def playlist_queued(title: str, track_count: int) -> discord.Embed:
+    embed = _base("Playlist Added to Queue", COLOUR_OK)
+    embed.description = f"Queued **{track_count}** tracks from **{title}**"
+    return embed
+
+
+
 def queue_embed_native(player: GuildPlayer, page: int = 1, page_size: int = 10) -> discord.Embed:
     """Paginated queue embed for native GuildPlayer."""
     q = list(player.queue)
@@ -149,3 +156,15 @@ def warning(message: str) -> discord.Embed:
 
 def info(message: str) -> discord.Embed:
     return _base("ℹ️  Info", COLOUR_INFO, message)
+
+
+def lyrics_embed(title: str, artist: str, lyrics_content: str, is_synced: bool = True) -> discord.Embed:
+    tag = "⚡ Live Auto-Synced Lyrics" if is_synced else "📜 Lyrics"
+    embed = _base(f"🎤 {title}", COLOUR_OK)
+    if artist:
+        embed.set_author(name=f"{artist} • {tag}")
+    else:
+        embed.set_author(name=tag)
+    embed.description = lyrics_content
+    return embed
+

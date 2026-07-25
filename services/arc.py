@@ -25,6 +25,7 @@ safe to share across processes (use Redis for that).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -330,6 +331,77 @@ async def _spotify_track_title(spotify_url: str) -> str | None:
     return None
 
 
+async def _extract_spotify_playlist(url: str) -> tuple[str | None, list[str]]:
+    """Extract playlist/album title and list of track queries from Spotify URL."""
+    m = re.search(r"open\.spotify\.com/(playlist|album)/([a-zA-Z0-9]+)", url)
+    if not m:
+        return None, []
+    item_type, item_id = m.group(1), m.group(2)
+    embed_url = f"https://open.spotify.com/embed/{item_type}/{item_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(embed_url) as resp:
+                if resp.status != 200:
+                    return None, []
+                html = await resp.text()
+                match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+                if not match:
+                    return None, []
+                data = json.loads(match.group(1))
+                props = data.get("props", {}).get("pageProps", {})
+                state = props.get("state", {}).get("data", {})
+                entity = state.get("entity", {})
+                playlist_title = entity.get("title") or entity.get("name") or f"Spotify {item_type.capitalize()}"
+                
+                track_list = entity.get("trackList", []) or entity.get("tracks", {}).get("items", [])
+                tracks = []
+                for t in track_list:
+                    title = t.get("title") or t.get("name")
+                    subtitle = t.get("subtitle") or ""
+                    artists = ", ".join([a.get("name", "") for a in t.get("artists", [])]) if t.get("artists") else subtitle
+                    if title:
+                        tracks.append(f"{title} {artists}".strip())
+                return playlist_title, tracks
+    except Exception as exc:
+        logger.warning("Spotify playlist extraction error for %s: %s", url, exc)
+        return None, []
+
+
+def _sync_extract_youtube_playlist(url: str) -> tuple[str | None, list[str]]:
+    """Extract playlist title and video queries from a YouTube playlist URL using yt-dlp."""
+    try:
+        import yt_dlp
+        opts = {
+            "quiet": True,
+            "extract_flat": "in_playlist",
+            "skip_download": True,
+            "noplaylist": False,
+            "logger": logging.getLogger("yt_dlp"),
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return None, []
+            pl_title = info.get("title") or "YouTube Playlist"
+            entries = info.get("entries") or []
+            queries = []
+            for e in entries:
+                vid = e.get("id")
+                title = e.get("title")
+                if vid:
+                    queries.append(f"https://www.youtube.com/watch?v={vid}")
+                elif title:
+                    queries.append(title)
+            return pl_title, queries
+    except Exception as exc:
+        logger.warning("YouTube playlist extraction error for %s: %s", url, exc)
+        return None, []
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Arc Music API client
 # ─────────────────────────────────────────────────────────────────────────────
@@ -432,6 +504,21 @@ class ArcClient:
             self._redis = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
+
+    async def resolve_playlist(self, query: str) -> tuple[str | None, list[str]]:
+        """
+        Check if query is a Spotify/YouTube playlist or album and return
+        (playlist_title, list_of_track_queries). Returns (None, []) if not a playlist.
+        """
+        q = query.strip()
+        if "open.spotify.com/playlist/" in q or "open.spotify.com/album/" in q:
+            return await _extract_spotify_playlist(q)
+        
+        if ("youtube.com/playlist" in q or "list=" in q) and "watch?v=" not in q:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _sync_extract_youtube_playlist, q)
+            
+        return None, []
 
     async def resolve(self, query: str) -> ResolvedQuery:
         """
