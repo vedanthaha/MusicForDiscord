@@ -408,6 +408,27 @@ def _sync_extract_youtube_playlist(url: str) -> tuple[str | None, list[str]]:
         return None, []
 
 
+def _sync_extract_direct_stream_url(video_id: str) -> str | None:
+    """Extract direct audio stream URL using yt-dlp when Arc API is unavailable or times out."""
+    try:
+        import yt_dlp
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "format": "bestaudio/best",
+            "skip_download": True,
+            "noplaylist": True,
+            "logger": logging.getLogger("yt_dlp"),
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            if info:
+                return info.get("url")
+    except Exception as exc:
+        logger.warning("yt-dlp direct stream extraction failed for %s: %s", video_id, exc)
+    return None
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Arc Music API client
@@ -558,21 +579,31 @@ class ArcClient:
 
         try:
             return await self._resolve_via_arc(query, provider)
-        except ArcError as exc:
+        except Exception as exc:
             logger.warning(
-                "Arc resolution failed for %r (%s) – falling back to Lavalink. Reason: %s",
+                "Arc resolution failed for %r (%s) – trying direct yt-dlp stream extraction. Reason: %s",
                 query,
                 provider.name,
                 exc,
             )
-            return self._native_fallback(query, provider)
-        except Exception as exc:
-            logger.error(
-                "Unexpected error in Arc resolution for %r: %s",
-                query,
-                exc,
-                exc_info=True,
-            )
+            try:
+                video_id, title, thumbnail, duration = await _resolve_youtube_meta(query, provider)
+                if video_id:
+                    loop = asyncio.get_event_loop()
+                    stream_url = await loop.run_in_executor(None, _sync_extract_direct_stream_url, video_id)
+                    if stream_url:
+                        return ResolvedQuery(
+                            lavalink_query=stream_url,
+                            provider=provider,
+                            original=query,
+                            video_id=video_id,
+                            via_arc=False,
+                            title=title,
+                            thumbnail=thumbnail,
+                            duration=duration,
+                        )
+            except Exception as fallback_exc:
+                logger.error("Direct yt-dlp fallback also failed: %s", fallback_exc)
             return self._native_fallback(query, provider)
 
     # ── Internal resolution pipeline ──────────────────────────────────────────
@@ -580,7 +611,7 @@ class ArcClient:
     async def _resolve_via_arc(
         self, query: str, provider: Provider
     ) -> ResolvedQuery:
-        """Full Arc resolution pipeline: ID → cache → job → return URL."""
+        """Full Arc resolution pipeline: ID → cache → job (10s max) → direct yt-dlp fallback."""
         # Step 1: Resolve YouTube metadata (ID + title + thumbnail + duration)
         video_id, title, thumbnail, duration = await _resolve_youtube_meta(
             query, provider
@@ -609,9 +640,30 @@ class ArcClient:
                 duration=duration,
             )
 
-        # Step 3: Submit Arc download job (rate-limited by semaphore)
-        async with self._semaphore:
-            public_url = await self._download_and_cache(video_id)
+        # Step 3: Submit Arc download job (10s timeout max; fall back to yt-dlp direct stream if queued)
+        public_url: str | None = None
+        try:
+            async with self._semaphore:
+                public_url = await asyncio.wait_for(
+                    self._download_and_cache(video_id), timeout=10.0
+                )
+        except Exception as exc:
+            logger.warning(
+                "Arc API job slow/queued for video_id=%s (%s) – extracting direct stream via yt-dlp...",
+                video_id,
+                exc,
+            )
+
+        if not public_url:
+            loop = asyncio.get_event_loop()
+            public_url = await loop.run_in_executor(
+                None, _sync_extract_direct_stream_url, video_id
+            )
+
+        if not public_url:
+            raise ArcResolveError(
+                f"Failed to resolve audio stream for video_id={video_id}"
+            )
 
         return ResolvedQuery(
             lavalink_query=public_url,
